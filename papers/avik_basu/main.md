@@ -22,8 +22,9 @@ abstract: |
 ## Introduction and motivation
 
 A model that keeps reporting good accuracy is easy to trust and easy to ignore.
-Yet a model can produce the *right predictions for the wrong reasons*. In other words, it can
-hold its headline metrics steady while the features driving its decisions change
+Yet a model can produce the *right predictions for the wrong reasons*. In other
+words, it can hold its headline metrics steady while the features driving its
+decisions change
 underneath it. When that happens, the model has quietly become a different model.
 A model whose behavior was never validated will eventually fail, and the
 eventual failure tends to be sudden and hard to diagnose.
@@ -34,14 +35,20 @@ answering for reasons nobody reviewed, and in a regulated setting that is a
 problem independent of whether the headline metric has moved at all.
 
 Most production ML monitoring is built around two families of signal, and both
-share a blind spot. The first is **performance monitoring** which includes metrics such as 
-accuracy , F1, AUC, business KPIs, etc. However, these metrics require the ground truth labels
-which are often delayed by weeks or months. The second being **input drift monitoring** which monitors incoming feature distributions, it needs no labels and it answers *did the data change?*.
+share a blind spot. The first is **performance monitoring**, which includes
+metrics such as accuracy, F1, AUC, and business KPIs. However, these metrics
+require the ground truth labels, which are often delayed by weeks or months. The
+second is **input drift monitoring**, which monitors incoming feature
+distributions. It needs no labels, but it answers *did the data change?* rather
+than *did the model's use of the data change?*.
 
-This paper is about a third signal, **explanation drift monitoring** which measures the change over time in *how* a model attributes its predictions to input features. We measure it by logging per-feature SHAP attributions [@shap_nips] for sampled production traffic and tracking their distributions over time. When the model starts relying on different features, or relying on the same
-features in a different direction, the SHAP distributions move and can be detected without waiting for labels.
-
-Our contributions are:
+This paper is about a third signal, **explanation drift monitoring**, which
+measures the change over time in *how* a model attributes its predictions to
+input features. We measure it by logging per-feature SHAP attributions
+[@shap_nips] for sampled production traffic and tracking their distributions over
+time. When the model starts relying on different features, or relying on the same
+features in a different direction, the SHAP distributions move and can be
+detected without waiting for labels. Our contributions are:
 
 1. A delineation of *when* explanation drift carries information that input-drift
    monitoring does not, and when it merely restates it. We support this with two
@@ -54,9 +61,8 @@ Our contributions are:
 3. A mapping from these signals to three failure patterns that recur in production:
    concept drift, accuracy-preserving model-version regressions, and data-pipeline
    errors invisible to input monitoring.
-4. An open-source reference implementation, `shap-monitor` [@shapmonitor], and a
-   fully reproducible experiment script that regenerates every number and figure
-   reported here, with uncertainty intervals on all headline quantities.
+4. An open-source library, `shap-monitor` [@shapmonitor], which allows users to
+   monitor explanation drift for their models and use-cases.
 
 ## Background
 
@@ -75,8 +81,8 @@ f(x) = \phi_0 + \sum_{i=1}^{M} \phi_i,
 
 where $\phi_0$ is the base (expected) value and $\phi_i$ is the contribution of
 feature $i$. A positive $\phi_i$ pushes the prediction above the baseline; a
-negative one pulls it below. For tree ensembles, `TreeExplainer` computes these
-attributions exactly and efficiently [@shap_treeexplainer], which makes per-
+negative one pulls it below. For tree ensembles, these attributions can be
+computed exactly and efficiently [@shap_treeexplainer], which makes per-
 prediction explanation practical at production volumes.
 
 For monitoring we are not interested in any single explanation. We are interested
@@ -85,7 +91,8 @@ in how that distribution evolves over time. Two summaries are central. The
 **mean absolute attribution** $\mathbb{E}[|\phi_i|]$ is a global importance
 measure that quantifies how much feature $i$ moves predictions, regardless of direction. The
 **mean signed attribution** $\mathbb{E}[\phi_i]$ captures the typical *direction*
-of the feature's effect. A change in either of these is a change in the model's reasoning.
+of the feature's effect. A change in either of these, in absolute terms or
+relative to the other features, is a change in the model's reasoning.
 
 ### What existing monitoring catches, and what it misses
 
@@ -105,20 +112,18 @@ showing on tabular data that a classifier trained to separate reference-period
 from current-period SHAP vectors can be a more sensitive indicator of a
 performance-relevant shift than detectors operating on the inputs themselves
 [@mougan2022explanation; @mougan2023explanation]. The adversarial-validation
-construction described in [](#adversarial) is essentially theirs. Attribution
+construction we describe in [](#adversarial) is essentially their Explanation
+Shift Detector, and we claim no novelty for it. Attribution
 drift is also monitored in at least one production system: Amazon SageMaker Model
 Monitor compares the ranking of global SHAP importances against a training
 baseline using a normalized discounted cumulative gain score, and alerts when it
 falls below a threshold [@sagemaker_monitor].
 
-We therefore do not claim the observation that attribution distributions move
-under drift; that is established. What we add is threefold. First, an explicit
+What we add on top of the related work here is threefold. First, an explicit
 account of *which* production failures this signal can and cannot catch, in
 particular separating the common case where explanation drift merely re-expresses
 an input shift that ordinary monitoring would already flag from the case where it
-is the only signal available. Our two case studies are chosen to make that
-distinction concrete rather than to argue for the signal uniformly, and in one of
-them the explanation signal is the weaker of the two. Second, a set of signals
+is the only signal available. Second, a set of signals
 read *together*: per-feature PSI to localize, an adversarial score for joint
 shift, and magnitude, rank, and sign summaries to characterize the change, where
 SageMaker's monitor uses rank alone and the explanation-shift literature uses the
@@ -134,20 +139,15 @@ distinct from input feature drift in an important way. Input drift asks whether
 $P(X)$ has changed. Explanation drift asks whether $P(\phi(X))$ has changed,
 where $\phi$ is the explanation function induced by the *current model*. The
 attribution distribution couples the data and the model, so explanation drift can
-surface three ways: the inputs moved so as to change which features the model
-leans on (covariate shift with a behavioral consequence); the feature-target
-relationship changed, so the same inputs are used differently (concept drift); or
-the model itself changed, whether a new version or a silent upstream
-transformation, so attributions shift on identical inputs. [](#patterns) takes the last two up as
-production failure patterns.
+surface three ways: covariate shift, concept drift, or a change in the model
+itself. [](#patterns) develops the latter two as production failure patterns.
 
 Crucially, none of these requires labels to detect, which makes explanation drift
-a *leading* signal in delayed-label regimes.
-
-Explanation drift is a complement, not a replacement: it narrows the blind spot
-between the other two signals rather than superseding either. Because attributions
-are per-feature, it also points at *which* part of the reasoning moved, which is a
-strong lead for root-cause analysis.
+a *leading* signal in delayed-label regimes. Explanation drift is a complement,
+not a replacement. It narrows the blind spot between the other two signals rather
+than superseding either. Because attributions are per-feature, it also points at
+*which* part of the reasoning moved, which is a strong lead for root-cause
+analysis.
 
 ## Detecting explanation drift
 
@@ -176,17 +176,19 @@ was developed for raw scorecard distributions, and we carry it over to attributi
 distributions unchanged; it is a useful default rather than a calibrated result,
 and [](#psi-magnitudes) records an important caveat on reading large values. PSI
 is cheap, interpretable, and per-feature, which makes it a good first-pass alarm
-and a good way to localize drift to specific features. A KS test is a reasonable
-alternative univariate statistic; PSI's advantage here is the familiar banding.
+and a good way to localize drift to specific features.
 
 (adversarial)=
 ### Multivariate shift (adversarial validation)
 
-Per-feature tests miss joint shifts: combinations of attributions can move even
+Per-feature tests miss joint shifts, i.e., combinations of attributions can move even
 when no single feature's marginal PSI looks alarming. *Adversarial validation*
 captures this. We label reference-period attribution vectors as class 0 and
-current-period vectors as class 1, train a classifier to tell them apart, and
-measure its cross-validated AUC [@adversarial_validation]. An AUC near 0.5 means
+current-period vectors as class 1, train a simple classifier to tell them apart, and
+measure its cross-validated AUC. Adversarial validation is a general technique
+[@adversarial_validation]; applying it to attribution vectors as a drift detector
+is due to Mougan et al., who introduce it as the *Explanation Shift Detector*
+[@mougan2022explanation; @mougan2023explanation]. An AUC near 0.5 means
 the two periods are statistically indistinguishable; an AUC approaching 1.0 means
 the model's reasoning in the two periods is easily separable, i.e., strong evidence of
 drift. The classifier's feature importances additionally rank *which* attribution
@@ -199,9 +201,9 @@ Beyond distributional distance, three interpretable summaries describe the
 *nature* of a shift. The **change in mean absolute attribution** says whether a
 feature became more or less influential overall. The **change in importance
 rank** says whether the model's priority ordering of features was reshuffled. And
-a **sign flip**, i.e., a change in the typical direction of a feature's contribution,
-is the most striking: it means a feature that used to push predictions one way now
-pushes them the other. Sign flips on important features are a high-signal
+a **sign flip**, i.e., a change in the typical direction of a feature's
+contribution, means a feature that used to push predictions one way now pushes
+them the other. Sign flips on important features are a high-signal
 indication that relationships learned during training no longer hold.
 
 (patterns)=
@@ -645,27 +647,25 @@ automatic trigger for rollback.
 ## Conclusion and future work
 
 Production models can keep their accuracy while quietly changing the reasoning
-behind their predictions, and the standard monitoring stack (input drift plus
-delayed-label performance) has a structural blind spot for exactly this. Tracking
-the distribution of SHAP attributions over time closes part of that gap. It is a
-label-free signal, and because it is per-feature it both detects drift and
+behind their predictions, and the standard monitoring stack, input drift plus
+delayed-label performance, has a structural blind spot for exactly this. Tracking
+SHAP attribution distributions over time closes part of that gap with a
+label-free signal that, because it is per-feature, both detects drift and
 localizes it.
 
 Our two studies delimit where it helps. Under a demographic covariate shift
-([](#case-a)), F1 held steady (0.710 → 0.721) while attributions moved sharply,
-but input-drift monitoring separated the two periods more decisively than the
-attribution view did; the gain there was not global but per-feature, on `race` and
-three others where the inputs stayed quiet and the attributions crossed the alert
-band. The independent case is [](#case-b): versions scored on byte-identical
-inputs preserved accuracy while relocating a rank-3 feature's contribution onto a
-correlated substitute. Input drift there is zero by construction and performance
-monitoring is silent, leaving explanation drift as the only label-free signal that
-fires, and it stays quiet on a true null retrain.
+([](#case-a)), input-drift monitoring separated the two periods more decisively
+than the attribution view did; what the attribution view added was per-feature, on
+`race` and three others where the inputs stayed quiet while the attributions
+crossed the alert band. In [](#case-b), versions scored on byte-identical inputs
+preserve accuracy while relocating a rank-3 feature's contribution onto a
+correlated substitute, so input and performance monitoring are both silent and
+explanation drift is the only signal that fires. It stays quiet on a true null
+retrain.
 
-The `shap-monitor` package provides an open-source reference implementation, and
-the technique itself is implementation-agnostic. Promising directions for future
-work include asynchronous and streaming logging to further reduce overhead,
-additional storage backends for cloud-native deployments, and richer alerting that
-fuses explanation drift with input-drift and performance signals into a single,
-better-calibrated alarm. We hope explanation drift monitoring becomes a standard
-third pillar of production ML observability, alongside the two it complements.
+The `shap-monitor` package provides an open-source implementation. Promising
+directions for future work include asynchronous logging, additional storage
+backends, and alerting that fuses explanation drift with input-drift and
+performance signals into a single, better-calibrated alarm. We hope explanation
+drift monitoring becomes a standard third pillar of production ML observability,
+alongside the two it complements.
